@@ -37,18 +37,34 @@ const createBackbone = async function(req, res) {
         const [fields, files] = await form.parse(req);
         const norm = ValidateAndNormalizeFields(fields, {
             'name' : {type: 'string', optional: false},
+            'coLocatedNamespace' : {type: 'dns-segment', optional: true, default: null},
             'ownerGroup': {type: 'string', optional: true, default: ''},
         });
 
         const client = await ClientFromPool();
         try {
-            const result = await queryWithContext(req, client, async (client, userInfo) => {
-                return await client.query("INSERT INTO Backbones(Name, LifeCycle, Owner, OwnerGroup) VALUES ($1, 'new', $2, $3) RETURNING Id", [norm.name, userInfo.userId, norm.ownerGroup]);
+            let backboneId = null;
+            let siteId = null;
+            let apId = null;
+            await queryWithContext(req, client, async (client, userInfo) => {
+                const result = await client.query("INSERT INTO Backbones(Name, LifeCycle, Owner, OwnerGroup, CoLocatedNamespace) VALUES ($1, 'new', $2, $3, $4) RETURNING Id", [norm.name, userInfo.userId, norm.ownerGroup, norm.coLocatedNamespace]);
+                backboneId = result.rows[0].id;
+                if (!!norm.coLocatedNamespace) {
+                    const site_result = await client.query(`INSERT INTO InteriorSites(Name, TargetPlatform, CoLocated, Backbone, Owner, OwnerGroup) ` +
+                    `VALUES ('co-located', 'sk2', true, $1, $2, $3) RETURNING Id`,
+                    [backboneId, userInfo.userId, norm.ownerGroup]);
+                    siteId = site_result.rows[0].id;
+                    const ap_result = await client.query(`INSERT INTO BackboneAccessPoints(Name, Kind, InteriorSite, Owner, OwnerGroup) ` +
+                            `VALUES ('manage', 'manage', $1, $2, $3) RETURNING Id`,
+                            [siteId, userInfo.userId, norm.ownerGroup]);
+                    apId = ap_result.rows[0].id;
+                }
             });
-
             returnStatus = 201;
-            res.status(returnStatus).json({id: result.rows[0].id});
-            await WatchNotify('Backbones', result.rows[0].id);
+            res.status(returnStatus).json({id: backboneId});
+            await WatchNotify('Backbones', backboneId);
+            if (!!siteId) await WatchNotify('InteriorSites', siteId);
+            if (!!apId) await WatchNotify('BackboneAccessPoints', apId);
         } catch (error) {
             returnStatus = 500;
             res.status(returnStatus).send(error.message);
@@ -158,6 +174,13 @@ const updateBackboneSite = async function(req, res) {
                     let siteName = site.name;
 
                     //
+                    // If InteriorSite is CoLocated, no changes are allowed
+                    //
+                    if (site.colocated) {
+                        throw new Error('Cannot change a co-located backbone site');
+                    }
+
+                    //
                     // If the name has been changed, update the site record in the database
                     //
                     if (norm.name != null && norm.name != site.name) {
@@ -212,11 +235,15 @@ const createAccessPoint = async function(req, res) {
         try {
             const result = await queryWithContext(req, client, async (client, userInfo) => {
                 const userId = userInfo.userId;
-                const siteResult = await client.query("SELECT Name from InteriorSites WHERE Id = $1", [sid]);
+                const siteResult = await client.query("SELECT Name, CoLocated from InteriorSites WHERE Id = $1", [sid]);
                 if (siteResult.rowCount == 0) {
                     throw new Error(`Referenced interior site not found: ${sid}`);
                 }
                 
+                if (siteResult.rows[0].colocated && norm.kind == 'manage') {
+                    throw new Error(`Cannot create a manage access point on a co-located site: ${sid}`)
+                }
+
                 let extraCols = "";
                 let extraVals = "";
                 const name = norm.name || norm.kind;
@@ -425,13 +452,35 @@ const deleteBackbone = async function(req, res) {
         }
 
         await queryWithContext(req, client, async (client) => {
-            const vanResult = await client.query("SELECT Id FROM ApplicationNetworks WHERE Backbone = $1 and LifeCycle = 'ready' LIMIT 1", [bid]);
+            const vanResult = await client.query("SELECT Id FROM ApplicationNetworks WHERE Backbone = $1 and LifeCycle = 'ready'", [bid]);
             if (vanResult.rowCount > 0) {
                 throw new Error('Cannot delete a backbone with active application networks');
             }
-            const siteResult = await client.query("SELECT Id FROM InteriorSites WHERE Backbone = $1 LIMIT 1", [bid]);
+            const siteResult = await client.query("SELECT Id, Certificate, CoLocated FROM InteriorSites WHERE Backbone = $1", [bid]);
+            let coLocatedOnly = false;
+            let siteId = null;
+            let siteCertificate = null;
             if (siteResult.rowCount > 0) {
-                throw new Error('Cannot delete a backbone with interior sites');
+                if (siteResult.rowCount > 1 || !siteResult.rows[0].colocated) {
+                    throw new Error('Cannot delete a backbone with interior sites');
+                }
+                coLocatedOnly = true;
+                siteId = siteResult.rows[0].id;
+                siteCertificate = siteResult.rows[0].certificate;
+            }
+            if (coLocatedOnly) {
+                const apResult = await client.query("SELECT Id, Certificate FROM BackboneAccessPoints WHERE InteriorSite = $1", [siteId]);
+                for (const row of apResult.rows) {
+                    if (row.certificate) {
+                        await client.query("UPDATE BackboneAccessPoints SET Certificate = NULL WHERE Id = $1", [row.id]);
+                        await client.query("DELETE FROM TlsCertificates WHERE Id = $1", [row.certificate]);
+                    }
+                    await client.query("DELETE FROM BackboneAccessPoints WHERE Id = $1", [row.id]);
+                }
+                await client.query("DELETE FROM InteriorSites WHERE Id = $1", [siteId]);
+                if (siteCertificate) {
+                    await client.query("DELETE FROM TlsCertificates WHERE Id = $1", [siteCertificate])
+                }
             }
             const bbResult = await client.query("DELETE FROM Backbones WHERE Id = $1 RETURNING Certificate", [bid]);
             if (bbResult.rowCount == 1) {
@@ -463,9 +512,16 @@ const deleteBackboneSite = async function(req, res) {
         }
 
         await queryWithContext(req, client, async (client) => {
-            const result = await client.query("SELECT Certificate FROM InteriorSites WHERE Id = $1", [sid]);
+            const result = await client.query("SELECT Certificate, CoLocated FROM InteriorSites WHERE Id = $1", [sid]);
             if (result.rowCount == 1) {
                 const row = result.rows[0];
+
+            //
+            // If the site is co-located, it cannot be deleted via API
+            //
+            if (row.colocated) {
+                throw new Error('Cannot delete a co-located backbone site');
+            }
 
             //
             // Delete all of the site's access points
@@ -517,6 +573,14 @@ const deleteAccessPoint = async function(req, res) {
         }
 
         await queryWithContext(req, client, async (client) => {
+            const siteResult = await client.query("SELECT BackboneAccessPoints.Kind, InteriorSites.CoLocated FROM BackboneAccessPoints JOIN InteriorSites on BackboneAccessPoints.InteriorSite = InteriorSites.Id WHERE BackboneAccessPoints.Id = $1", [apid]);
+            if (siteResult.rowCount == 1) {
+                const site = siteResult.rows[0];
+                if (site.kind == 'manage' && site.colocated) {
+                    throw new Error(`Cannot delete the manage access point of a co-located backbone site`)
+                }
+            }
+
             const apResult = await client.query("DELETE FROM BackboneAccessPoints WHERE Id = $1 Returning Certificate, Kind, InteriorSite", [apid]);
             if (apResult.rowCount == 1) {
                 const row = apResult.rows[0];
@@ -655,7 +719,7 @@ const listBackboneSites = async function(req, res) {
         }
 
         const result = await queryWithContext(req, client, async (client) => {
-            return await client.query("SELECT InteriorSites.Id, Name, Lifecycle, Failure, Metadata, DeploymentState, TargetPlatform, FirstActiveTime, LastHeartbeat, " +
+            return await client.query("SELECT InteriorSites.Id, Name, Lifecycle, Failure, Metadata, DeploymentState, TargetPlatform, FirstActiveTime, LastHeartbeat, CoLocated, " +
                                       "TlsCertificates.expiration as tlsexpiration, TlsCertificates.renewalTime as tlsrenewal, TargetPlatforms.LongName as PlatformLong " +
                                       "FROM InteriorSites " +
                                       "LEFT OUTER JOIN TlsCertificates ON TlsCertificates.Id = Certificate " +

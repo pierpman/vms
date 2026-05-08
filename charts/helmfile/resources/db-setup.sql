@@ -166,6 +166,7 @@ CREATE TABLE Backbones (
     Lifecycle LifecycleType DEFAULT 'new',
     Failure text,
     Certificate UUID REFERENCES TlsCertificates,
+    CoLocatedNamespace text UNIQUE DEFAULT NULL,
     Owner UUID REFERENCES Users,
     OwnerGroup text 
 );
@@ -191,6 +192,7 @@ CREATE TABLE InteriorSites (
     LastHeartbeat timestamptz,
 
     Backbone UUID REFERENCES Backbones,
+    CoLocated boolean DEFAULT false,
     Owner UUID REFERENCES Users,
     OwnerGroup text
 );
