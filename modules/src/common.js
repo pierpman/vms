@@ -32,6 +32,7 @@ export const APPLICATION_ROUTER_LABEL = "skx-router"
 // Kubernetes annotation keys
 //
 export const META_ANNOTATION_SKUPPERX_CONTROLLED = "skupper.io/skupperx-controlled"
+export const META_ANNOTATION_BACKBONE_ID = "skupper.io/backbone-id"
 export const META_ANNOTATION_STATE_HASH = "skx/state-hash"
 export const META_ANNOTATION_STATE_KEY = "skx/state-key"
 export const META_ANNOTATION_STATE_DIR = "skx/state-dir"
@@ -44,6 +45,7 @@ export const META_ANNOTATION_TLS_INJECT = "skx/tls-inject"
 //
 export const STATE_TYPE_LINK = "link"
 export const STATE_TYPE_ACCESS_POINT = "accesspoint"
+export const STATE_TYPE_LISTENER = "listener"
 export const INJECT_TYPE_ACCESS_POINT = "accesspoint"
 export const INJECT_TYPE_SITE = "site"
 

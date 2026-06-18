@@ -85,11 +85,6 @@ export function BackboneSite(name, siteId) {
         },
         spec : {
             linkAccess : 'none',
-            settings   : {
-                'management-plane'   : 'skupperx',
-                'skupperx-site-id'   : siteId,
-                'skupperx-site-type' : 'backbone',
-            }
         },
     };
 }
@@ -186,6 +181,27 @@ function getRouterAccessRole(kind) {
         default:
             throw new Error(`Unknown kind: ${kind}`);
     }
+}
+
+export function RouterAccessColoManage(name, secretName) {
+    return {
+        apiVersion : 'skupper.io/v2alpha1',
+        kind       : 'RouterAccess',
+        metadata : {
+            name : name,
+            annotations : {
+                [META_ANNOTATION_SKUPPERX_CONTROLLED] : 'true',
+            },
+        },
+        spec: {
+            tlsCredentials: secretName,
+            generateTlsCredentials: false,
+            roles : [{
+                name: getRouterAccessRole('manage'),
+            }],
+            accessType: 'local',
+        },
+    };
 }
 
 const accessPointRouterAccess = function(apId, data) {
@@ -325,7 +341,7 @@ export function BackboneRole() {
             },
             {
                 apiGroups : ["skupper.io"],
-                resources : ["sites", "links", "networkaccesses", "routeraccesses"],
+                resources : ["sites", "links", "networkaccesses", "routeraccesses", "listeners"],
                 verbs     : ["get", "list", "watch", "create", "update", "delete", "patch"],
             },
         ],

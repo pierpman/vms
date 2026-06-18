@@ -63,7 +63,7 @@ CREATE TYPE LifecycleType AS ENUM ('partial', 'new', 'skx_cr_created', 'cm_cert_
 --   ready-automatic  The site is ready to be deployed by the automatic process
 --   deployed         The site is deployed and has checked in with the management plane
 --
-CREATE TYPE DeploymentStateType AS ENUM ('not-ready', 'ready-bootstrap', 'ready-bootfinish', 'ready-automatic', 'deployed');
+CREATE TYPE DeploymentStateType AS ENUM ('not-ready', 'ready-bootstrap', 'ready-bootfinish', 'ready-automatic', 'colo-automatic', 'deployed');
 
 --
 -- ApplicationNetworkType
@@ -164,7 +164,7 @@ CREATE TABLE Backbones (
     Name text UNIQUE,
     Lifecycle LifecycleType DEFAULT 'new',
     Failure text,
-    Certificate UUID REFERENCES TlsCertificates,
+    Certificate UUID REFERENCES TlsCertificates ON DELETE CASCADE,
     CoLocatedNamespace text UNIQUE DEFAULT NULL,
     Owner UUID REFERENCES Users,
     OwnerGroup text 
@@ -181,7 +181,7 @@ CREATE TABLE InteriorSites (
     Name text,
     Lifecycle LifecycleType DEFAULT 'new',
     Failure text,
-    Certificate UUID REFERENCES TlsCertificates,
+    Certificate UUID REFERENCES TlsCertificates ON DELETE CASCADE,
     DeploymentState DeploymentStateType DEFAULT 'not-ready',
     TargetPlatform text REFERENCES TargetPlatforms,
 
@@ -192,7 +192,7 @@ CREATE TABLE InteriorSites (
 
     Backbone UUID REFERENCES Backbones,
     CoLocated boolean DEFAULT false,
-    Owner UUID REFERENCES Users,
+    Owner UUID REFERENCES Users,   -- TODO - Remove these.  It doesn't make sense for a site to have a different owner than the backbone
     OwnerGroup text
 );
 
